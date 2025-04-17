@@ -1,0 +1,154 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: expresso-admin-config
+  labels:
+    app: expresso-admin
+  namespace: default
+data:
+  nginx.conf: |
+    worker_processes auto;
+
+    events {
+      worker_connections 1024;
+    }
+
+    http {
+      include       mime.types;
+      default_type  application/octet-stream;
+      sendfile        on;
+      keepalive_timeout  65;
+
+      gzip on;
+      gzip_types text/plain application/json application/javascript text/css;
+
+      server {
+        listen 80;
+        server_name localhost;
+
+        root /var/www/public;
+        index index.php index.html;
+
+        location / {
+          try_files $uri $uri/ /index.php?$query_string;
+        }
+
+        location ~ \.php$ {
+          fastcgi_pass 127.0.0.1:9000;
+          fastcgi_index index.php;
+          fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+          fastcgi_param DOCUMENT_ROOT $realpath_root;
+          include fastcgi_params;
+        }
+
+        location ~ /\.(env|git|ht) {
+          deny all;
+        }
+
+        access_log /var/log/nginx/access.log;
+        error_log /var/log/nginx/error.log;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: expresso-admin
+  labels:
+    app: expresso-admin
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: expresso-admin
+  template:
+    metadata:
+      labels:
+        app: expresso-admin
+    spec:
+      containers:
+        - name: app
+          image: registry.example.com/expresso-admin:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9000
+          envFrom:
+            - secretRef:
+                name: expresso-admin-env
+          volumeMounts:
+            - name: code
+              mountPath: /var/www
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+        - name: nginx
+          image: nginx:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: code
+              mountPath: /var/www
+            - name: expresso-admin-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "250m"
+      volumes:
+        - name: code
+          emptyDir: {}
+        - name: expresso-admin-config
+          configMap:
+            name: expresso-admin-config
+      restartPolicy: Always
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: expresso-admin-service
+spec:
+  selector:
+    app: expresso-admin
+  ports:
+    - port: 80
+      targetPort: 80
+
+---
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: expresso-admin-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-cloudflare
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - expresso-admin.expressopassagens.com.br
+      secretName: expresso-admin-tls
+  rules:
+    - host: expresso-admin.expressopassagens.com.br
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: expresso-admin-service
+                port:
+                  number: 80
+
